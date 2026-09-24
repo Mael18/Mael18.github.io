@@ -1,29 +1,14 @@
-// api/proxy.js — diagnostic version
-// Returns detailed errors so we can see what's crashing
-
+// api/proxy.js — diagnostic + Node runtime
 const MAILTM_API = "https://api.mail.tm";
 
-module.exports = async (req, res) => {
-  // CORS
+module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") {
-    res.status(200).end();
-    return;
+    return res.status(200).end();
   }
-
-  const diagnostics = {
-    node_version: process.version,
-    method: req.method,
-    query: req.query,
-    url: req.url,
-    has_body: !!req.body,
-    body_type: typeof req.body,
-    content_type: req.headers["content-type"] || null,
-    has_auth: !!req.headers["authorization"],
-  };
 
   try {
     const path = req.query.path || "/";
@@ -33,39 +18,32 @@ module.exports = async (req, res) => {
     if (req.headers["content-type"]) headers["Content-Type"] = req.headers["content-type"];
     if (req.headers["authorization"]) headers["Authorization"] = req.headers["authorization"];
 
-    const fetchOpts = { method: req.method, headers };
+    const fetchOptions = { method: req.method, headers };
 
-    if (["POST", "PUT", "PATCH"].includes(req.method)) {
-      let body = req.body;
-      if (body && typeof body === "object") {
-        body = JSON.stringify(body);
+    if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
+      if (req.body && Object.keys(req.body).length > 0) {
+        fetchOptions.body = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
       }
-      if (body) fetchOpts.body = body;
     }
 
-    // Test if global fetch exists (Node 18+)
     if (typeof fetch !== "function") {
-      res.status(500).json({
-        error: "fetch_not_available",
-        message: "Global fetch missing. Node version too old.",
-        diagnostics
-      });
-      return;
+      return res.status(500).json({ error: "fetch_unavailable", node: process.version });
     }
 
-    const upstream = await fetch(targetUrl, fetchOpts);
+    const upstream = await fetch(targetUrl, fetchOptions);
     const text = await upstream.text();
     const ct = upstream.headers.get("content-type") || "application/json";
 
     res.setHeader("Content-Type", ct);
-    res.status(upstream.status).send(text);
+    return res.status(upstream.status).send(text);
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       error: "proxy_exception",
-      message: err.message,
-      stack: (err.stack || "").split("\n").slice(0, 5),
-      target: MAILTM_API + (req.query.path || "/"),
-      diagnostics
+      message: String(err && err.message ? err.message : err),
+      stack: String(err && err.stack ? err.stack : "").split("\n").slice(0, 6),
+      node: process.version,
+      path: req.query.path || null,
+      method: req.method
     });
   }
 };
