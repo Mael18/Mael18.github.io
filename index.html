@@ -122,7 +122,7 @@
 <div class="container">
   <div class="header">
     <div class="codename">PHC-LordGrim</div>
-    <div class="subtitle">TEMPMAIL TERMINAL v4.0 // VERCEL BACKEND</div>
+    <div class="subtitle">TEMPMAIL TERMINAL v4.1 // VERCEL BACKEND</div>
   </div>
   <div class="panel" data-label="INBOX">
     <div class="email-display" id="addr">initializing<span class="cursor"></span></div>
@@ -167,8 +167,8 @@
   setInterval(draw, 66);
 })();
 
-// All requests go through our Vercel serverless function.
-// No CORS issue because /api/proxy is same-origin.
+// All requests go through the Vercel serverless backend at /api/proxy.
+// Same-origin, so no CORS. Backend talks to mail.tm server-side.
 var PROXY_PATH = "/api/proxy";
 
 var token = null;
@@ -201,21 +201,38 @@ function formatBytes(b) {
   return (b / 1024 / 1024).toFixed(1) + " MB";
 }
 
-// Generic proxy call
+// ─── PROXY FETCH ─────────────────────────────────────────────
+// Calls /api/proxy?path=<mail.tm path>
+// Forwards method, headers, body.
 async function pfetch(mailtmPath, opts) {
   opts = opts || {};
   var url = PROXY_PATH + "?path=" + encodeURIComponent(mailtmPath);
-  var res = await fetch(url, opts);
-  if (!res.ok) {
-    var body = "";
-    try { body = await res.text(); } catch (e) {}
-    throw new Error("HTTP " + res.status + " " + body.substring(0, 100));
+
+  var fetchOpts = {
+    method: opts.method || "GET",
+    mode: "cors",
+    headers: {}
+  };
+
+  if (opts.headers) {
+    for (var k in opts.headers) {
+      if (opts.headers.hasOwnProperty(k)) fetchOpts.headers[k] = opts.headers[k];
+    }
   }
+  if (opts.body) fetchOpts.body = opts.body;
+
+  var res = await fetch(url, fetchOpts);
   var text = await res.text();
+
+  if (!res.ok) {
+    throw new Error("HTTP " + res.status + (text ? " // " + text.substring(0, 180) : ""));
+  }
+
   try { return JSON.parse(text); }
-  catch (e) { throw new Error("Bad JSON: " + text.substring(0, 100)); }
+  catch (e) { throw new Error("Bad JSON: " + text.substring(0, 180)); }
 }
 
+// ─── INBOX CREATION ─────────────────────────────────────────
 async function newInbox() {
   setStatus("creating new identity...", "ok");
   try {
