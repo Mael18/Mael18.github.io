@@ -1,6 +1,8 @@
 {
   "version": 2,
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/proxy" }
-  ]
+  "functions": {
+    "api/proxy.js": {
+      "runtime": "nodejs20.x"
+    }
+  }
 }
