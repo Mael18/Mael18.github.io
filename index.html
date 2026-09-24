@@ -122,7 +122,7 @@
 <div class="container">
   <div class="header">
     <div class="codename">PHC-LordGrim</div>
-    <div class="subtitle">TEMPMAIL TERMINAL v4.1 // VERCEL BACKEND</div>
+    <div class="subtitle">TEMPMAIL TERMINAL v5.0 // 1SECMAIL DIRECT</div>
   </div>
   <div class="panel" data-label="INBOX">
     <div class="email-display" id="addr">initializing<span class="cursor"></span></div>
@@ -167,12 +167,13 @@
   setInterval(draw, 66);
 })();
 
-// All requests go through the Vercel serverless backend at /api/proxy.
-// Same-origin, so no CORS. Backend talks to mail.tm server-side.
-var PROXY_PATH = "/api/proxy";
+// ─── 1secmail direct API — GET only, CORS-enabled, no auth, no backend ───
+// Docs: https://www.1secmail.com/api/
+var API = "https://www.1secmail.com/api/v1/";
 
-var token = null;
 var address = null;
+var login = null;
+var domain = null;
 var pollTimer = null;
 var currentEmail = null;
 var renderMode = "html";
@@ -201,65 +202,28 @@ function formatBytes(b) {
   return (b / 1024 / 1024).toFixed(1) + " MB";
 }
 
-// ─── PROXY FETCH ─────────────────────────────────────────────
-// Calls /api/proxy?path=<mail.tm path>
-// Forwards method, headers, body.
-async function pfetch(mailtmPath, opts) {
-  opts = opts || {};
-  var url = PROXY_PATH + "?path=" + encodeURIComponent(mailtmPath);
-
-  var fetchOpts = {
-    method: opts.method || "GET",
-    mode: "cors",
-    headers: {}
-  };
-
-  if (opts.headers) {
-    for (var k in opts.headers) {
-      if (opts.headers.hasOwnProperty(k)) fetchOpts.headers[k] = opts.headers[k];
-    }
-  }
-  if (opts.body) fetchOpts.body = opts.body;
-
-  var res = await fetch(url, fetchOpts);
+async function gfetch(url) {
+  var res = await fetch(url, { mode: "cors" });
+  if (!res.ok) throw new Error("HTTP " + res.status);
   var text = await res.text();
-
-  if (!res.ok) {
-    throw new Error("HTTP " + res.status + (text ? " // " + text.substring(0, 180) : ""));
-  }
-
   try { return JSON.parse(text); }
-  catch (e) { throw new Error("Bad JSON: " + text.substring(0, 180)); }
+  catch (e) { throw new Error("Bad JSON: " + text.substring(0, 100)); }
 }
 
-// ─── INBOX CREATION ─────────────────────────────────────────
 async function newInbox() {
   setStatus("creating new identity...", "ok");
   try {
-    var domains = await pfetch("/domains");
-    if (!domains["hydra:member"] || domains["hydra:member"].length === 0) {
+    var domains = await gfetch(API + "?action=getDomainList");
+    if (!Array.isArray(domains) || domains.length === 0) {
       throw new Error("no domains available");
     }
-    var domain = domains["hydra:member"][0].domain;
-    var name = Math.random().toString(36).substring(2, 12);
-    address = name + "@" + domain;
-    var password = Math.random().toString(36).substring(2, 15);
-
-    await pfetch("/accounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ address: address, password: password })
-    });
-
-    var tok = await pfetch("/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ address: address, password: password })
-    });
-    token = tok.token;
+    domain = domains[Math.floor(Math.random() * domains.length)];
+    login = Math.random().toString(36).substring(2, 12);
+    address = login + "@" + domain;
 
     localStorage.setItem("tm_addr", address);
-    localStorage.setItem("tm_token", token);
+    localStorage.setItem("tm_login", login);
+    localStorage.setItem("tm_domain", domain);
 
     setAddr(address);
     setStatus("online // polling every 5s", "ok");
@@ -275,13 +239,12 @@ async function newInbox() {
 }
 
 async function refresh() {
-  if (!token || isRefreshing) return;
+  if (!login || !domain || isRefreshing) return;
   isRefreshing = true;
   try {
-    var data = await pfetch("/messages", {
-      headers: { "Authorization": "Bearer " + token }
-    });
-    updateList(data["hydra:member"] || []);
+    var url = API + "?action=getMessages&login=" + encodeURIComponent(login) + "&domain=" + encodeURIComponent(domain);
+    var data = await gfetch(url);
+    updateList(Array.isArray(data) ? data : []);
   } catch (e) {
     setStatus("refresh error: " + e.message, "error");
   } finally {
@@ -302,29 +265,30 @@ function updateList(msgs) {
   var existingNodes = new Map();
   list.querySelectorAll(".msg").forEach(function(node) { existingNodes.set(node.dataset.id, node); });
   existingNodes.forEach(function(node, id) {
-    var stillExists = msgs.some(function(m) { return m.id === id; });
+    var stillExists = msgs.some(function(m) { return String(m.id) === String(id); });
     if (!stillExists) { if (node.parentNode === list) list.removeChild(node); }
   });
   msgs.forEach(function(m, index) {
-    var node = existingNodes.get(m.id);
+    var mid = String(m.id);
+    var node = existingNodes.get(mid);
     if (!node) {
       node = document.createElement("div");
       node.className = "msg";
-      node.dataset.id = m.id;
-      node.onclick = (function(id) { return function() { openMsg(id); }; })(m.id);
+      node.dataset.id = mid;
+      node.onclick = (function(id) { return function() { openMsg(id); }; })(mid);
       node.innerHTML =
-        '<div class="msg-from">' + esc(m.from.address) + '</div>' +
+        '<div class="msg-from">' + esc(m.from || "(unknown)") + '</div>' +
         '<div class="msg-subject">' + esc(m.subject || "(no subject)") + '</div>' +
-        '<div class="msg-date">' + new Date(m.createdAt).toLocaleString() + '</div>';
+        '<div class="msg-date">' + esc(m.date || "") + '</div>';
       if (list.children[index]) list.insertBefore(node, list.children[index]);
       else list.appendChild(node);
     } else {
       var from = node.querySelector(".msg-from");
       var subj = node.querySelector(".msg-subject");
       var date = node.querySelector(".msg-date");
-      if (from) from.textContent = m.from.address;
+      if (from) from.textContent = m.from || "(unknown)";
       if (subj) subj.textContent = m.subject || "(no subject)";
-      if (date) date.textContent = new Date(m.createdAt).toLocaleString();
+      if (date) date.textContent = m.date || "";
     }
   });
 }
@@ -333,9 +297,8 @@ async function openMsg(id) {
   if (currentOpenId === id) return;
   currentOpenId = id;
   try {
-    var m = await pfetch("/messages/" + id, {
-      headers: { "Authorization": "Bearer " + token }
-    });
+    var url = API + "?action=readMessage&login=" + encodeURIComponent(login) + "&domain=" + encodeURIComponent(domain) + "&id=" + encodeURIComponent(id);
+    var m = await gfetch(url);
     currentEmail = m;
     renderMode = "html";
     renderEmail();
@@ -348,15 +311,19 @@ function renderEmail() {
   var m = currentEmail;
   if (!m) return;
   var view = document.getElementById("view");
-  var hasHtml = m.html && m.html.length > 0;
-  var textBody = m.text || (m.html ? m.html.join("\n").replace(/<[^>]+>/g, "") : "(no body)");
+  var hasHtml = m.htmlBody && m.htmlBody.length > 0;
+  var textBody = m.textBody || (m.htmlBody ? m.htmlBody.replace(/<[^>]+>/g, "") : "(no body)");
+
   var attachHtml = "";
   if (m.attachments && m.attachments.length > 0) {
     var items = m.attachments.map(function(a) {
-      return '<a class="attachment" href="' + PROXY_PATH + '?path=' + encodeURIComponent('/messages/' + m.id + '/attachment/' + a.id) + '" target="_blank" rel="noopener noreferrer">' + esc(a.filename) + ' (' + formatBytes(a.size) + ')</a>';
+      var dl = API + "?action=download&login=" + encodeURIComponent(login) + "&domain=" + encodeURIComponent(domain) + "&id=" + encodeURIComponent(m.id) + "&file=" + encodeURIComponent(a.filename);
+      return '<a class="attachment" href="' + dl + '" target="_blank" rel="noopener noreferrer">' +
+        esc(a.filename) + ' (' + formatBytes(a.size) + ')</a>';
     }).join("");
     attachHtml = '<div class="attachments"><div class="attachments-title">// ATTACHMENTS</div>' + items + '</div>';
   }
+
   var toggleBar = "";
   if (hasHtml) {
     toggleBar = '<div class="toggle-bar"><span>VIEW:</span>' +
@@ -364,21 +331,22 @@ function renderEmail() {
       '<button class="' + (renderMode === 'text' ? 'active' : '') + '" onclick="setRenderMode(\'text\')">TEXT</button>' +
       '<span style="margin-left:auto;">' + (renderMode === 'html' ? '[SANDBOXED]' : '[RAW]') + '</span></div>';
   }
+
   var bodyHtml;
   if (renderMode === "html" && hasHtml) {
-    var sanitized = sanitizeHtml(m.html.join("\n"));
+    var sanitized = sanitizeHtml(m.htmlBody);
     var proxiedImgs = proxyImages(sanitized);
     var doc = buildIframeDoc(proxiedImgs);
     bodyHtml = '<iframe class="email-body-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" srcdoc="' + escapeAttr(doc) + '"></iframe>';
   } else {
     bodyHtml = '<div class="email-body-text">' + esc(textBody) + '</div>';
   }
+
   view.innerHTML = '<div class="email-view">' +
     '<div class="email-header">' +
-    '<div class="field"><span class="key">FROM:</span><span class="val">' + esc(m.from.address) + (m.from.name ? ' (' + esc(m.from.name) + ')' : '') + '</span></div>' +
-    '<div class="field"><span class="key">TO:</span><span class="val">' + esc((m.to || []).map(function(t) { return t.address; }).join(", ")) + '</span></div>' +
+    '<div class="field"><span class="key">FROM:</span><span class="val">' + esc(m.from || "(unknown)") + '</span></div>' +
     '<div class="field"><span class="key">SUBJECT:</span><span class="val">' + esc(m.subject || "(no subject)") + '</span></div>' +
-    '<div class="field"><span class="key">DATE:</span><span class="val">' + new Date(m.createdAt).toLocaleString() + '</span></div>' +
+    '<div class="field"><span class="key">DATE:</span><span class="val">' + esc(m.date || "") + '</span></div>' +
     '</div>' + toggleBar + bodyHtml + attachHtml + '</div>';
 }
 
@@ -446,9 +414,10 @@ function copyAddr() {
 
 (function init() {
   var sa = localStorage.getItem("tm_addr");
-  var st = localStorage.getItem("tm_token");
-  if (sa && st) {
-    address = sa; token = st;
+  var sl = localStorage.getItem("tm_login");
+  var sd = localStorage.getItem("tm_domain");
+  if (sa && sl && sd) {
+    address = sa; login = sl; domain = sd;
     setAddr(address);
     setStatus("restored session // polling", "ok");
     refresh();
